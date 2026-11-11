@@ -1,0 +1,215 @@
+
+# Haywar Marketing - WhatsApp Bot - Flask Webhook
+# Deploy on Render.com (Free) -> New Web Service -> Python
+# Env Vars: WHATSAPP_TOKEN, PHONE_NUMBER_ID, VERIFY_TOKEN, CUSTOMER_SERVICE_NUMBER
+
+import os, random, requests, json
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+
+WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "PUT_YOUR_TOKEN_HERE")
+PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "PUT_PHONE_NUMBER_ID_HERE")
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "haywar123")
+CUSTOMER_SERVICE_NUMBER = os.environ.get("CUSTOMER_SERVICE_NUMBER", "967718814365") # رقم خدمة العملاء - غيره لاحقا
+
+GRAPH_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
+
+# ====== عدّل خدماتك وأسعارك من هنا ======
+SERVICES = {
+    "1": {"name": "إدارة حسابات التواصل الاجتماعي", "price": "يبدأ من 150$ / شهريا", "desc": "محتوى + تصميم + نشر + تقارير شهرية"},
+    "2": {"name": "إعلانات ممولة (فيسبوك / انستقرام / تيك توك)", "price": "يبدأ من 100$ + ميزانية الإعلان", "desc": "استهداف دقيق ومتابعة يومية للنتائج"},
+    "3": {"name": "تصميم هوية بصرية وشعار", "price": "يبدأ من 120$", "desc": "شعار + ألوان + ملف هوية كامل"},
+    "4": {"name": "تصميم موقع / متجر إلكتروني", "price": "يبدأ من 350$", "desc": "موقع سريع + متوافق مع الجوال"},
+    "5": {"name": "تصميم تطبيق جوال", "price": "حسب الطلب - اطلب عرض سعر", "desc": "تطبيق أندرويد + آيفون"},
+    "6": {"name": "تصوير منتجات وفيديو إعلاني", "price": "يبدأ من 80$", "desc": "تصوير احترافي + مونتاج"},
+    "7": {"name": "كتابة محتوى و SEO", "price": "يبدأ من 50$", "desc": "مقالات + وصف منتجات + تحسين محركات البحث"},
+}
+
+# تخزين مؤقت للطلبات - في الإنتاج استخدم قاعدة بيانات
+orders = {}
+states = {}
+
+def send_message(to, text):
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    payload = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}}
+    try:
+        r = requests.post(GRAPH_URL, headers=headers, json=payload, timeout=15)
+        print("SEND:", r.status_code, r.text)
+        return r
+    except Exception as e:
+        print("SEND ERROR", e)
+
+def send_buttons(to, text, buttons):
+    # buttons: list of (id, title)
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    payload = {
+        "messaging_product": "whatsapp", "to": to, "type": "interactive",
+        "interactive": {"type": "button", "body": {"text": text},
+                       "action": {"buttons": [{"type": "reply", "reply": {"id": bid, "title": title}} for bid, title in buttons]}}
+    try:
+        r = requests.post(GRAPH_URL, headers=headers, json=payload, timeout=15)
+        print("BUTTONS:", r.status_code, r.text)
+        if r.status_code != 200:
+            send_message(to, text)
+    except Exception as e:
+        print(e)
+        send_message(to, text)
+
+def welcome_msg():
+    return """مرحباً بك في *شركة هايوار التسويقية* 👋
+
+نقدم خدمات تسويقية متكاملة لنجاح مشروعك 🚀
+
+اختر من القائمة:
+1️⃣ عرض الخدمات والأسعار
+2️⃣ طلب خدمة جديدة
+3️⃣ كود تفعيل التطبيق
+4️⃣ التحدث مع خدمة العملاء
+
+اكتب رقم الاختيار، أو اكتب *القائمة* في أي وقت للرجوع هنا."""
+
+def services_msg():
+    txt = "*📋 قائمة خدمات هايوار والأسعار:*\n\n"
+    for k, s in SERVICES.items():
+        txt += f"{k}️⃣ *{s['name']}*\n💰 {s['price']}\n📝 {s['desc']}\n\n"
+    txt += "لطلب خدمة، اكتب *2* ثم رقم الخدمة.\nمثال: 2 ثم 1\n\nاكتب *القائمة* للرجوع"
+    return txt
+
+def activation_code_msg(phone):
+    code = f"{random.randint(100000, 999999)}"
+    # هنا تربط كود التفعيل مع تطبيقكم - حاليا نرسله للزبون ونسجله
+    # في تطبيقكم: احفظوا الكود في قاعدة البيانات عبر API الخاص بكم
+    return f"""🔐 *كود تفعيل تطبيق هايوار*
+
+كودك هو:
+*{code}*
+
+ادخل هذا الكود في التطبيق لتفعيل حسابك.
+الكود صالح لمدة 10 دقائق.
+
+إذا لم تطلب الكود، تجاهل هذه الرسالة."""
+
+@app.route("/", methods=["GET"])
+def home():
+    return "Haywar WhatsApp Bot is Running ✅", 200
+
+@app.route("/webhook", methods=["GET"])
+def verify():
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        return challenge, 200
+    return "Verification failed", 403
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json()
+    print(json.dumps(data, ensure_ascii=False))
+    try:
+        for entry in data.get("entry", []):
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+                for msg in value.get("messages", []):
+                    from_number = msg.get("from")
+                    msg_type = msg.get("type")
+                    text = ""
+                    if msg_type == "text":
+                        text = msg["text"]["body"].strip()
+                    elif msg_type == "interactive":
+                        # زر
+                        inter = msg.get("interactive", {})
+                        if "button_reply" in inter:
+                            text = inter["button_reply"].get("id", "")
+                        elif "list_reply" in inter:
+                            text = inter["list_reply"].get("id", "")
+                    if not text:
+                        continue
+                    handle_message(from_number, text)
+    except Exception as e:
+        print("WEBHOOK ERROR", e)
+    return jsonify({"status": "ok"}), 200
+
+def handle_message(sender, text):
+    low = text.lower().strip()
+    state = states.get(sender, "menu")
+
+    # أوامر عامة
+    if low in ["مرحبا", "هلا", "سلام", "hi", "hello", "القائمة", "menu", "0", "بداية", "start"]:
+        states[sender] = "menu"
+        send_buttons(sender, welcome_msg(), [("1", "📋 الخدمات"), ("2", "🛒 طلب خدمة"), ("3", "🔐 كود التفعيل")])
+        return
+
+    if state == "menu":
+        if low == "1":
+            send_message(sender, services_msg())
+            return
+        if low == "2":
+            states[sender] = "await_service"
+            send_message(sender, services_msg() + "\n\n✍️ *اكتب رقم الخدمة التي تريد طلبها:*")
+            return
+        if low == "3":
+            send_message(sender, activation_code_msg(sender))
+            # سجل الكود وارسله لخدمة العملاء أيضا لو تريد
+            return
+        if low == "4":
+            send_message(sender, f"تم تحويلك لخدمة العملاء 👨‍💼\nسيتواصل معك فريقنا قريباً.\nأو تواصل مباشرة: +{CUSTOMER_SERVICE_NUMBER}\n\nاكتب مشكلتك الآن وسيتم إرسالها للفريق.")
+            states[sender] = "to_support"
+            return
+        # لو أرسل رقم خدمة مباشرة
+        if low in SERVICES:
+            send_message(sender, f"اخترت: *{SERVICES[low]['name']}*\n💰 {SERVICES[low]['price']}\n\nلطلبها اكتب *2*")
+            return
+        send_message(sender, "لم أفهم طلبك 😅\nاكتب *القائمة* لعرض الخيارات")
+        return
+
+    if state == "await_service":
+        if low in SERVICES:
+            states[sender] = "await_name"
+            orders[sender] = {"service": SERVICES[low]['name'], "price": SERVICES[low]['price']}
+            send_message(sender, f"ممتاز! اخترت:\n*{SERVICES[low]['name']}*\n\n✍️ *ما هو اسمك الكامل؟*")
+            return
+        else:
+            send_message(sender, "اكتب رقم الخدمة الصحيح من 1 إلى 7")
+            return
+
+    if state == "await_name":
+        orders[sender]["name"] = text
+        states[sender] = "await_phone_or_details"
+        send_message(sender, f"شكراً {text} ✅\n\n✍️ *اكتب تفاصيل طلبك:* (مثال: أريد إدارة انستقرام لمتجر ملابس، عندي 3 منتجات...)\nأو اكتب رقم جوالك لو تريد الفريق يتصل بك.")
+        return
+
+    if state == "await_phone_or_details":
+        orders[sender]["details"] = text
+        order = orders[sender]
+        # إرسال الطلب لخدمة العملاء
+        notify = f"🛒 *طلب جديد من واتساب - هايوار*\n\n👤 الاسم: {order.get('name')}\n📱 رقم الزبون: +{sender}\n🛠 الخدمة: {order.get('service')}\n💰 السعر: {order.get('price')}\n📝 التفاصيل: {text}\n\n---\nتواصل مع الزبون بأسرع وقت."
+        send_message(CUSTOMER_SERVICE_NUMBER, notify)
+        send_message(sender, f"""✅ *تم استلام طلبك بنجاح!*
+
+📋 ملخص الطلب:
+🛠 الخدمة: {order.get('service')}
+💰 السعر: {order.get('price')}
+👤 الاسم: {order.get('name')}
+
+سيتواصل معك فريق هايوار خلال ساعات العمل.
+شكراً لثقتك بنا ❤️
+
+اكتب *القائمة* لطلب خدمة أخرى.""")
+        states[sender] = "menu"
+        orders.pop(sender, None)
+        return
+
+    if state == "to_support":
+        # إعادة توجيه رسالة الزبون لخدمة العملاء
+        send_message(CUSTOMER_SERVICE_NUMBER, f"💬 *رسالة من زبون يحتاج دعم:*\n📱 +{sender}\n📝 {text}")
+        send_message(sender, "تم إرسال رسالتك لفريق خدمة العملاء ✅\nسيرد عليك أحدهم قريباً.\nاكتب *القائمة* للرجوع.")
+        states[sender] = "menu"
+        return
+
+    # افتراضي
+    send_message(sender, welcome_msg())
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
